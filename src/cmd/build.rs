@@ -66,7 +66,7 @@ pub struct BuildCommand {
     verbosity: VerbosityFlags,
     #[structopt(flatten)]
     unstable_options: UnstableOptions,
-    /// Emit debug info into wasm file
+    /// Emits debug info into wasm file
     #[structopt(long, short)]
     debug: bool,
 }
@@ -112,7 +112,7 @@ impl CheckCommand {
             false,
             BuildArtifacts::CheckOnly,
             unstable_flags,
-            true,
+            false,
         )
     }
 }
@@ -230,17 +230,18 @@ fn ensure_maximum_memory_pages(module: &mut Module, maximum_allowed_pages: u32) 
 /// Strips all custom sections.
 ///
 /// Presently all custom sections are not required so they can be stripped safely.
-fn strip_custom_sections(module: &mut Module) {
-    module.sections_mut().retain(|section| {
-        !matches!(
-            section,
-            Section::Custom(_) | Section::Name(_) | Section::Reloc(_)
-        )
+
+fn strip_custom_sections(module: &mut Module, debug: bool) {
+    module.sections_mut().retain(|section| match section {
+        Section::Custom(_) => false,
+        Section::Name(_) => debug,
+        Section::Reloc(_) => false,
+        _ => true,
     });
 }
 
 /// Performs required post-processing steps on the wasm artifact.
-fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
+fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> {
     // Deserialize wasm module from a file.
     let mut module =
         parity_wasm::deserialize_file(&crate_metadata.original_wasm).context(format!(
@@ -256,7 +257,7 @@ fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
         anyhow::bail!("Optimizer failed");
     }
     ensure_maximum_memory_pages(&mut module, MAX_MEMORY_PAGES)?;
-    strip_custom_sections(&mut module);
+    strip_custom_sections(&mut module, debug);
 
     validate_wasm::validate_import_section(&module)?;
 
@@ -366,6 +367,13 @@ fn do_optimization(
         .arg("--zero-filled-memory")
         .output()?;
 
+    if debug_info {
+        std::fs::rename(
+            &dest_wasm,
+            PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm")),
+        )?;
+    }
+
     if !output.status.success() {
         let err = str::from_utf8(&output.stderr)
             .expect("cannot convert stderr output of wasm-opt to string")
@@ -389,7 +397,7 @@ fn execute(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-    debug: bool,
+    debug_info: bool,
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
         let crate_metadata = CrateMetadata::collect(manifest_path)?;
@@ -399,7 +407,7 @@ fn execute(
             optimize_contract,
             build_artifact,
             unstable_flags,
-            debug,
+            debug_info,
         )?;
         let res = BuildResult {
             dest_wasm: maybe_dest_wasm,
@@ -413,7 +421,13 @@ fn execute(
         return Ok(res);
     }
 
-    let res = super::metadata::execute(&manifest_path, verbosity, build_artifact, unstable_flags)?;
+    let res = super::metadata::execute(
+        &manifest_path,
+        verbosity,
+        build_artifact,
+        unstable_flags,
+        debug_info,
+    )?;
     Ok(res)
 }
 
@@ -432,7 +446,7 @@ pub(crate) fn execute_with_crate_metadata(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-    debug: bool,
+    debug_info: bool,
 ) -> Result<(Option<PathBuf>, Option<OptimizationResult>)> {
     maybe_println!(
         verbosity,
@@ -447,7 +461,7 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[2/{}]", build_artifact.steps()).bold(),
         "Post processing wasm file".bright_green().bold()
     );
-    post_process_wasm(&crate_metadata)?;
+    post_process_wasm(&crate_metadata, debug_info)?;
     if !optimize_contract {
         return Ok((None, None));
     }
@@ -457,7 +471,7 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
-    let optimization_result = optimize_wasm(&crate_metadata, debug)?;
+    let optimization_result = optimize_wasm(&crate_metadata, optimize_contract)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
         Some(optimization_result),

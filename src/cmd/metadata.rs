@@ -40,6 +40,7 @@ struct GenerateMetadataCommand {
     verbosity: Verbosity,
     build_artifact: BuildArtifacts,
     unstable_options: UnstableFlags,
+    debug: bool,
 }
 
 /// Result of generating the extended contract project metadata
@@ -239,7 +240,7 @@ impl GenerateMetadataCommand {
             true, // for the hash we always use the optimized version of the contract
             self.build_artifact,
             self.unstable_options.clone(),
-            false, // for the hash we always not emit the debug info into wasm
+            self.debug,
         )?;
 
         let wasm = fs::read(&self.crate_metadata.dest_wasm)?;
@@ -266,6 +267,7 @@ pub(crate) fn execute(
     verbosity: Verbosity,
     build_artifact: BuildArtifacts,
     unstable_options: UnstableFlags,
+    debug: bool,
 ) -> Result<BuildResult> {
     let crate_metadata = CrateMetadata::collect(manifest_path)?;
     let res = GenerateMetadataCommand {
@@ -273,6 +275,7 @@ pub(crate) fn execute(
         verbosity,
         build_artifact,
         unstable_options,
+        debug,
     }
     .exec()?;
     Ok(res)
