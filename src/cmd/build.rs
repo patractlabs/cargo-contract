@@ -66,6 +66,9 @@ pub struct BuildCommand {
     verbosity: VerbosityFlags,
     #[structopt(flatten)]
     unstable_options: UnstableOptions,
+    /// Emit debug info into wasm file
+    #[structopt(long, short)]
+    debug: bool,
 }
 
 impl BuildCommand {
@@ -80,6 +83,7 @@ impl BuildCommand {
             true,
             self.build_artifact,
             unstable_flags,
+            self.debug,
         )
     }
 }
@@ -108,6 +112,7 @@ impl CheckCommand {
             false,
             BuildArtifacts::CheckOnly,
             unstable_flags,
+            true,
         )
     }
 }
@@ -268,7 +273,7 @@ fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
 ///
 /// The intention is to reduce the size of bloated wasm binaries as a result of missing
 /// optimizations (or bugs?) between Rust and Wasm.
-fn optimize_wasm(crate_metadata: &CrateMetadata) -> Result<OptimizationResult> {
+fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<OptimizationResult> {
     let mut dest_optimized = crate_metadata.dest_wasm.clone();
     dest_optimized.set_file_name(format!("{}-opt.wasm", crate_metadata.package_name));
 
@@ -276,6 +281,7 @@ fn optimize_wasm(crate_metadata: &CrateMetadata) -> Result<OptimizationResult> {
         crate_metadata.dest_wasm.as_os_str(),
         &dest_optimized.as_os_str(),
         3,
+        debug_info,
     )?;
 
     let original_size = metadata(&crate_metadata.dest_wasm)?.len() as f64 / 1000.0;
@@ -300,6 +306,7 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
+    debug_info: bool,
 ) -> Result<()> {
     let mut dest_wasm_file = File::open(dest_wasm)?;
     let mut dest_wasm_file_content = Vec::new();
@@ -311,7 +318,7 @@ fn do_optimization(
         // the default
         shrink_level: 1,
         // the default
-        debug_info: false,
+        debug_info,
     };
     let mut module = binaryen::Module::read(&dest_wasm_file_content)
         .map_err(|_| anyhow::anyhow!("binaryen failed to read file content"))?;
@@ -335,6 +342,7 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
+    debug_info: bool,
 ) -> Result<()> {
     // check `wasm-opt` is installed
     if which::which("wasm-opt").is_err() {
@@ -381,6 +389,7 @@ fn execute(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
+    debug: bool,
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
         let crate_metadata = CrateMetadata::collect(manifest_path)?;
@@ -390,6 +399,7 @@ fn execute(
             optimize_contract,
             build_artifact,
             unstable_flags,
+            debug,
         )?;
         let res = BuildResult {
             dest_wasm: maybe_dest_wasm,
@@ -422,6 +432,7 @@ pub(crate) fn execute_with_crate_metadata(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
+    debug: bool,
 ) -> Result<(Option<PathBuf>, Option<OptimizationResult>)> {
     maybe_println!(
         verbosity,
@@ -446,7 +457,7 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
-    let optimization_result = optimize_wasm(&crate_metadata)?;
+    let optimization_result = optimize_wasm(&crate_metadata, debug)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
         Some(optimization_result),
