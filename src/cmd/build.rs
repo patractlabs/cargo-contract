@@ -188,7 +188,6 @@ fn build_cargo_project(
 
     // clear RUSTFLAGS
     std::env::remove_var("RUSTFLAGS");
-
     Ok(())
 }
 
@@ -397,7 +396,7 @@ fn execute(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-    debug_info: bool,
+    debug: bool,
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
         let crate_metadata = CrateMetadata::collect(manifest_path)?;
@@ -407,7 +406,7 @@ fn execute(
             optimize_contract,
             build_artifact,
             unstable_flags,
-            debug_info,
+            debug,
         )?;
         let res = BuildResult {
             dest_wasm: maybe_dest_wasm,
@@ -426,7 +425,7 @@ fn execute(
         verbosity,
         build_artifact,
         unstable_flags,
-        debug_info,
+        debug,
     )?;
     Ok(res)
 }
