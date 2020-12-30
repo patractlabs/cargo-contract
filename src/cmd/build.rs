@@ -384,6 +384,11 @@ fn do_optimization(
             err
         );
     }
+    if debug_info {
+        let debug_wasm = PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm"));
+        std::fs::rename(&dest_wasm, &debug_wasm)?;
+    }
+
     Ok(())
 }
 
@@ -399,7 +404,7 @@ fn execute(
     debug: bool,
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
-        let crate_metadata = CrateMetadata::collect(manifest_path)?;
+        let crate_metadata = CrateMetadata::collect(manifest_path, debug)?;
         let (maybe_dest_wasm, maybe_optimization_result) = execute_with_crate_metadata(
             &crate_metadata,
             verbosity,
@@ -408,6 +413,7 @@ fn execute(
             unstable_flags,
             debug,
         )?;
+
         let res = BuildResult {
             dest_wasm: maybe_dest_wasm,
             dest_metadata: None,
@@ -445,10 +451,10 @@ pub(crate) fn execute_with_crate_metadata(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-    debug_info: bool,
-) -> Result<(Option<PathBuf>, Option<OptimizationResult>)> {
-    maybe_println!(
-        verbosity,
+
+    debug: bool,
+) -> Result<(Option<PathBuf>, Option<PathBuf>, Option<OptimizationResult>)> {
+    println!(
         " {} {}",
         format!("[1/{}]", build_artifact.steps()).bold(),
         "Building cargo project".bright_green().bold()
@@ -460,9 +466,9 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[2/{}]", build_artifact.steps()).bold(),
         "Post processing wasm file".bright_green().bold()
     );
-    post_process_wasm(&crate_metadata, debug_info)?;
+    post_process_wasm(&crate_metadata, debug)?;
     if !optimize_contract {
-        return Ok((None, None));
+        return Ok((None, None, None));
     }
     maybe_println!(
         verbosity,
@@ -470,9 +476,10 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
-    let optimization_result = optimize_wasm(&crate_metadata, optimize_contract)?;
+    let (optimization_result, maybe_dest_debug_wasm) = optimize_wasm(&crate_metadata, debug)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
+        maybe_dest_debug_wasm,
         Some(optimization_result),
     ))
 }
