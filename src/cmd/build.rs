@@ -141,7 +141,7 @@ fn build_cargo_project(
     let mut flags =
         "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory".to_string();
     if debug {
-        flags.push_str(" -C opt-level=1");
+        flags.push_str(" -C opt-level=1 -C debuginfo=1");
     }
     std::env::set_var("RUSTFLAGS", flags);
 
@@ -227,7 +227,7 @@ fn ensure_maximum_memory_pages(module: &mut Module, maximum_allowed_pages: u32) 
 /// Presently all custom sections are not required so they can be stripped safely.
 fn strip_custom_sections(module: &mut Module, debug: bool) {
     module.sections_mut().retain(|section| match section {
-        Section::Custom(_) => false,
+        Section::Custom(_) => debug,
         Section::Name(_) => debug,
         Section::Reloc(_) => false,
         _ => true,
