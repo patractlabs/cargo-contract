@@ -1,4 +1,4 @@
-// Copyright 2018-2020 Parity Technologies (UK) Ltd.
+// Copyright 2018-2021 Parity Technologies (UK) Ltd.
 // This file is part of cargo-contract.
 //
 // cargo-contract is free software: you can redistribute it and/or modify
@@ -327,8 +327,8 @@ fn execute(
     unstable_flags: UnstableFlags,
     debug: bool,
 ) -> Result<BuildResult> {
-    let crate_metadata = CrateMetadata::collect(manifest_path)?;
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
+        let crate_metadata = CrateMetadata::collect(manifest_path)?;
         let (maybe_dest_wasm, maybe_dest_debug_wasm, maybe_optimization_result) =
             execute_with_crate_metadata(
                 &crate_metadata,
