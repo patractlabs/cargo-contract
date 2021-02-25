@@ -280,6 +280,7 @@ fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<Opt
     let mut dest_optimized = crate_metadata.dest_wasm.clone();
     dest_optimized.set_file_name(format!("{}-opt.wasm", crate_metadata.package_name));
 
+    println!("do op");
     let _ = do_optimization(
         crate_metadata.dest_wasm.as_os_str(),
         &dest_optimized.as_os_str(),
@@ -287,7 +288,9 @@ fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<Opt
         debug_info,
     )?;
 
+    println!("cal size");
     let original_size = metadata(&crate_metadata.dest_wasm)?.len() as f64 / 1000.0;
+    println!("if has optimized");
     let optimized_size = metadata(&dest_optimized)?.len() as f64 / 1000.0;
 
     // overwrite existing destination wasm file with the optimised version
@@ -345,7 +348,7 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
-    debug_info: bool,
+    _debug_info: bool,
 ) -> Result<()> {
     // check `wasm-opt` is installed
     if which::which("wasm-opt").is_err() {
@@ -369,13 +372,6 @@ fn do_optimization(
         .arg("--zero-filled-memory")
         .output()?;
 
-    if debug_info {
-        std::fs::rename(
-            &dest_wasm,
-            PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm")),
-        )?;
-    }
-
     if !output.status.success() {
         let err = str::from_utf8(&output.stderr)
             .expect("cannot convert stderr output of wasm-opt to string")
@@ -387,10 +383,15 @@ fn do_optimization(
             err
         );
     }
-    if debug_info {
-        let debug_wasm = PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm"));
-        std::fs::rename(&dest_wasm, &debug_wasm)?;
-    }
+
+    // if debug_info {
+    //     println!("debug wasm ...");
+    //     println!("{}", &dest_wasm.to_string_lossy());
+    //
+    //     let debug_wasm = PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm"));
+    //
+    //     std::fs::rename(&dest_wasm, &debug_wasm)?;
+    // }
 
     Ok(())
 }
@@ -408,7 +409,7 @@ fn execute(
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
         let crate_metadata = CrateMetadata::collect(manifest_path)?;
-        let (maybe_dest_wasm, maybe_debug_wasm, maybe_optimization_result) =
+        let (maybe_dest_wasm, maybe_dest_debug_wasm, maybe_optimization_result) =
             execute_with_crate_metadata(
                 &crate_metadata,
                 verbosity,
@@ -424,6 +425,7 @@ fn execute(
             dest_bundle: None,
             target_directory: crate_metadata.target_directory,
             optimization_result: maybe_optimization_result,
+            maybe_dest_debug_wasm,
             build_artifact,
             verbosity,
         };
@@ -487,10 +489,10 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
-    let (optimization_result, maybe_dest_debug_wasm) = optimize_wasm(&crate_metadata, debug)?;
+    let optimization_result = optimize_wasm(&crate_metadata, debug)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
-        maybe_dest_debug_wasm,
+        None,
         Some(optimization_result),
     ))
 }
