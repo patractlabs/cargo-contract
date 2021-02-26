@@ -66,6 +66,8 @@ pub struct BuildCommand {
     verbosity: VerbosityFlags,
     #[structopt(flatten)]
     unstable_options: UnstableOptions,
+    /// # Patract feature
+    ///
     /// Emits debug info into wasm file
     #[structopt(long, short)]
     debug: bool,
@@ -83,7 +85,6 @@ impl BuildCommand {
             true,
             self.build_artifact,
             unstable_flags,
-            self.debug,
         )
     }
 }
@@ -112,7 +113,6 @@ impl CheckCommand {
             false,
             BuildArtifacts::CheckOnly,
             unstable_flags,
-            false,
         )
     }
 }
@@ -137,17 +137,12 @@ fn build_cargo_project(
     build_artifact: BuildArtifacts,
     verbosity: Verbosity,
     unstable_flags: UnstableFlags,
-    debug: bool,
 ) -> Result<()> {
     util::assert_channel()?;
 
-    // set linker args via RUSTFLAGS.
-    // Currently will override user defined RUSTFLAGS from .cargo/config. See https://github.com/paritytech/cargo-contract/issues/98.
-    let mut flags =
-        "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory".to_string();
-    if debug {
-        flags.push_str(" -C opt-level=1 -C debuginfo=1");
-    }
+    // {Patract} set linker args via RUSTFLAGS.
+    let flags =
+        "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory  -C opt-level=1 -C debuginfo=1".to_string();
     std::env::set_var("RUSTFLAGS", flags);
 
     let cargo_build = |manifest_path: &ManifestPath| {
@@ -232,18 +227,17 @@ fn ensure_maximum_memory_pages(module: &mut Module, maximum_allowed_pages: u32) 
 /// Strips all custom sections.
 ///
 /// Presently all custom sections are not required so they can be stripped safely.
-
-fn strip_custom_sections(module: &mut Module, debug: bool) {
-    module.sections_mut().retain(|section| match section {
-        Section::Custom(_) => debug,
-        Section::Name(_) => debug,
-        Section::Reloc(_) => false,
-        _ => true,
+fn strip_custom_sections(module: &mut Module) {
+    module.sections_mut().retain(|section| {
+        !matches!(
+            section,
+            Section::Custom(_) | Section::Name(_) | Section::Reloc(_)
+        )
     });
 }
 
 /// Performs required post-processing steps on the wasm artifact.
-fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> {
+fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
     // Deserialize wasm module from a file.
     let mut module =
         parity_wasm::deserialize_file(&crate_metadata.original_wasm).context(format!(
@@ -259,8 +253,9 @@ fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> 
         anyhow::bail!("Optimizer failed");
     }
     ensure_maximum_memory_pages(&mut module, MAX_MEMORY_PAGES)?;
-    strip_custom_sections(&mut module, debug);
-
+    module
+        .sections_mut()
+        .retain(|section| !matches!(section, Section::Reloc(_)));
     validate_wasm::validate_import_section(&module)?;
 
     debug_assert!(
@@ -277,7 +272,7 @@ fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> 
 /// The intention is to reduce the size of bloated wasm binaries as a result of missing
 /// optimizations (or bugs?) between Rust and Wasm.
 #[cfg(not(feature = "binaryen-as-dependency"))]
-fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<OptimizationResult> {
+fn optimize_wasm(crate_metadata: &CrateMetadata) -> Result<OptimizationResult> {
     let mut dest_optimized = crate_metadata.dest_wasm.clone();
     dest_optimized.set_file_name(format!("{}-opt.wasm", crate_metadata.package_name));
 
@@ -285,8 +280,11 @@ fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<Opt
         crate_metadata.dest_wasm.as_os_str(),
         &dest_optimized.as_os_str(),
         3,
-        debug_info,
     )?;
+
+    let mut module = Module::from_bytes(std::fs::read(&dest_optimized)?)?;
+    strip_custom_sections(&mut module);
+    std::fs::write(&dest_optimized, module.to_bytes()?)?;
 
     let original_size = metadata(&crate_metadata.dest_wasm)?.len() as f64 / 1000.0;
     let optimized_size = metadata(&dest_optimized)?.len() as f64 / 1000.0;
@@ -310,7 +308,6 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
-    debug_info: bool,
 ) -> Result<()> {
     let mut dest_wasm_file = File::open(dest_wasm)?;
     let mut dest_wasm_file_content = Vec::new();
@@ -322,7 +319,7 @@ fn do_optimization(
         // the default
         shrink_level: 1,
         // the default
-        debug_info,
+        debug_info: false,
     };
     let mut module = binaryen::Module::read(&dest_wasm_file_content)
         .map_err(|_| anyhow::anyhow!("binaryen failed to read file content"))?;
@@ -346,7 +343,6 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
-    _debug_info: bool,
 ) -> Result<()> {
     // check `wasm-opt` is installed
     if which::which("wasm-opt").is_err() {
@@ -394,7 +390,6 @@ fn execute(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-    debug: bool,
 ) -> Result<BuildResult> {
     if build_artifact == BuildArtifacts::CodeOnly || build_artifact == BuildArtifacts::CheckOnly {
         let crate_metadata = CrateMetadata::collect(manifest_path)?;
@@ -405,7 +400,6 @@ fn execute(
                 optimize_contract,
                 build_artifact,
                 unstable_flags,
-                debug,
             )?;
 
         let res = BuildResult {
@@ -421,13 +415,7 @@ fn execute(
         return Ok(res);
     }
 
-    let res = super::metadata::execute(
-        &manifest_path,
-        verbosity,
-        build_artifact,
-        unstable_flags,
-        debug,
-    )?;
+    let res = super::metadata::execute(&manifest_path, verbosity, build_artifact, unstable_flags)?;
     Ok(res)
 }
 
@@ -446,8 +434,6 @@ pub(crate) fn execute_with_crate_metadata(
     optimize_contract: bool,
     build_artifact: BuildArtifacts,
     unstable_flags: UnstableFlags,
-
-    debug: bool,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>, Option<OptimizationResult>)> {
     println!(
         " {} {}",
@@ -455,20 +441,14 @@ pub(crate) fn execute_with_crate_metadata(
         "Building cargo project".bright_green().bold()
     );
 
-    build_cargo_project(
-        &crate_metadata,
-        build_artifact,
-        verbosity,
-        unstable_flags,
-        debug,
-    )?;
+    build_cargo_project(&crate_metadata, build_artifact, verbosity, unstable_flags)?;
     maybe_println!(
         verbosity,
         " {} {}",
         format!("[2/{}]", build_artifact.steps()).bold(),
         "Post processing wasm file".bright_green().bold()
     );
-    post_process_wasm(&crate_metadata, debug)?;
+    post_process_wasm(&crate_metadata)?;
     if !optimize_contract {
         return Ok((None, None, None));
     }
@@ -479,7 +459,7 @@ pub(crate) fn execute_with_crate_metadata(
         "Optimizing wasm file".bright_green().bold()
     );
 
-    let optimization_result = optimize_wasm(&crate_metadata, debug)?;
+    let optimization_result = optimize_wasm(&crate_metadata)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
         None,
