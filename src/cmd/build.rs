@@ -276,11 +276,11 @@ fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> 
 ///
 /// The intention is to reduce the size of bloated wasm binaries as a result of missing
 /// optimizations (or bugs?) between Rust and Wasm.
+#[cfg(not(feature = "binaryen-as-dependency"))]
 fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<OptimizationResult> {
     let mut dest_optimized = crate_metadata.dest_wasm.clone();
     dest_optimized.set_file_name(format!("{}-opt.wasm", crate_metadata.package_name));
 
-    println!("do op");
     let _ = do_optimization(
         crate_metadata.dest_wasm.as_os_str(),
         &dest_optimized.as_os_str(),
@@ -288,13 +288,11 @@ fn optimize_wasm(crate_metadata: &CrateMetadata, debug_info: bool) -> Result<Opt
         debug_info,
     )?;
 
-    println!("cal size");
     let original_size = metadata(&crate_metadata.dest_wasm)?.len() as f64 / 1000.0;
-    println!("if has optimized");
     let optimized_size = metadata(&dest_optimized)?.len() as f64 / 1000.0;
 
     // overwrite existing destination wasm file with the optimised version
-    std::fs::rename(&dest_optimized, &crate_metadata.dest_wasm)?;
+    // std::fs::rename(&dest_optimized, &crate_metadata.dest_wasm)?;
     Ok(OptimizationResult {
         original_size,
         optimized_size,
@@ -383,15 +381,6 @@ fn do_optimization(
             err
         );
     }
-
-    // if debug_info {
-    //     println!("debug wasm ...");
-    //     println!("{}", &dest_wasm.to_string_lossy());
-    //
-    //     let debug_wasm = PathBuf::from(&dest_wasm.to_string_lossy().replace(".wasm", ".src.wasm"));
-    //
-    //     std::fs::rename(&dest_wasm, &debug_wasm)?;
-    // }
 
     Ok(())
 }
@@ -489,6 +478,7 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
+
     let optimization_result = optimize_wasm(&crate_metadata, debug)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),

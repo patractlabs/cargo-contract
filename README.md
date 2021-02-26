@@ -25,7 +25,7 @@ We optimize the resulting contract Wasm using `binaryen`. You have two options f
 ## Usage
 
 ```
-cargo-contract 0.8.0
+cargo-contract 0.9.1
 Utilities to develop Wasm smart contracts.
 
 USAGE:
