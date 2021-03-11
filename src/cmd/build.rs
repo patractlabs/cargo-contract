@@ -66,6 +66,9 @@ pub struct BuildCommand {
     verbosity: VerbosityFlags,
     #[structopt(flatten)]
     unstable_options: UnstableOptions,
+    /// Enable debug info in the wasm bundle
+    #[structopt(short = "d", long = "debug")]
+    debug: bool,
 }
 
 impl BuildCommand {
@@ -77,7 +80,7 @@ impl BuildCommand {
         execute(
             &manifest_path,
             verbosity,
-            true,
+            !self.debug,
             self.build_artifact,
             unstable_flags,
         )
@@ -132,15 +135,24 @@ fn build_cargo_project(
     build_artifact: BuildArtifacts,
     verbosity: Verbosity,
     unstable_flags: UnstableFlags,
+    debug: bool,
 ) -> Result<()> {
     util::assert_channel()?;
 
     // set linker args via RUSTFLAGS.
     // Currently will override user defined RUSTFLAGS from .cargo/config. See https://github.com/paritytech/cargo-contract/issues/98.
-    std::env::set_var(
-        "RUSTFLAGS",
-        "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory",
-    );
+    if debug {
+        std::env::set_var(
+            "RUSTFLAGS",
+            "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory -C opt-level=1 -C debuginfo=2",
+        );
+    } else {
+        // {Patract} No modifications on the instruction
+        std::env::set_var(
+            "RUSTFLAGS",
+            "-C link-arg=-z -C link-arg=stack-size=65536 -C link-arg=--import-memory",
+        );
+    }
 
     let cargo_build = |manifest_path: &ManifestPath| {
         let target_dir = &crate_metadata.target_directory;
@@ -234,8 +246,14 @@ fn strip_custom_sections(module: &mut Module) {
     });
 }
 
+fn strip_reloc_section(module: &mut Module) {
+    module
+        .sections_mut()
+        .retain(|section| !matches!(section, Section::Reloc(_)));
+}
+
 /// Performs required post-processing steps on the wasm artifact.
-fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
+fn post_process_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<()> {
     // Deserialize wasm module from a file.
     let mut module =
         parity_wasm::deserialize_file(&crate_metadata.original_wasm).context(format!(
@@ -251,7 +269,11 @@ fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
         anyhow::bail!("Optimizer failed");
     }
     ensure_maximum_memory_pages(&mut module, MAX_MEMORY_PAGES)?;
-    strip_custom_sections(&mut module);
+    if debug {
+        strip_reloc_section(&mut module);
+    } else {
+        strip_custom_sections(&mut module);
+    }
 
     validate_wasm::validate_import_section(&module)?;
 
@@ -268,7 +290,7 @@ fn post_process_wasm(crate_metadata: &CrateMetadata) -> Result<()> {
 ///
 /// The intention is to reduce the size of bloated wasm binaries as a result of missing
 /// optimizations (or bugs?) between Rust and Wasm.
-fn optimize_wasm(crate_metadata: &CrateMetadata) -> Result<OptimizationResult> {
+fn optimize_wasm(crate_metadata: &CrateMetadata, debug: bool) -> Result<OptimizationResult> {
     let mut dest_optimized = crate_metadata.dest_wasm.clone();
     dest_optimized.set_file_name(format!("{}-opt.wasm", crate_metadata.package_name));
 
@@ -276,6 +298,7 @@ fn optimize_wasm(crate_metadata: &CrateMetadata) -> Result<OptimizationResult> {
         crate_metadata.dest_wasm.as_os_str(),
         &dest_optimized.as_os_str(),
         3,
+        debug,
     )?;
 
     let original_size = metadata(&crate_metadata.dest_wasm)?.len() as f64 / 1000.0;
@@ -300,6 +323,7 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
+    debug: bool,
 ) -> Result<()> {
     let mut dest_wasm_file = File::open(dest_wasm)?;
     let mut dest_wasm_file_content = Vec::new();
@@ -311,7 +335,7 @@ fn do_optimization(
         // the default
         shrink_level: 1,
         // the default
-        debug_info: false,
+        debug_info: debug,
     };
     let mut module = binaryen::Module::read(&dest_wasm_file_content)
         .map_err(|_| anyhow::anyhow!("binaryen failed to read file content"))?;
@@ -335,6 +359,7 @@ fn do_optimization(
     dest_wasm: &OsStr,
     dest_optimized: &OsStr,
     optimization_level: u32,
+    debug: bool,
 ) -> Result<()> {
     // check `wasm-opt` is installed
     if which::which("wasm-opt").is_err() {
@@ -356,6 +381,7 @@ fn do_optimization(
         // the memory is initialized to zeros, otherwise it won't run the
         // memory-packing pre-pass.
         .arg("--zero-filled-memory")
+        .arg(if debug { "--debuginfo" } else { "" })
         .output()?;
 
     if !output.status.success() {
@@ -403,7 +429,13 @@ fn execute(
         return Ok(res);
     }
 
-    let res = super::metadata::execute(&manifest_path, verbosity, build_artifact, unstable_flags)?;
+    let res = super::metadata::execute(
+        &manifest_path,
+        verbosity,
+        build_artifact,
+        unstable_flags,
+        !optimize_contract,
+    )?;
     Ok(res)
 }
 
@@ -429,24 +461,27 @@ pub(crate) fn execute_with_crate_metadata(
         format!("[1/{}]", build_artifact.steps()).bold(),
         "Building cargo project".bright_green().bold()
     );
-    build_cargo_project(&crate_metadata, build_artifact, verbosity, unstable_flags)?;
+    build_cargo_project(
+        &crate_metadata,
+        build_artifact,
+        verbosity,
+        unstable_flags,
+        !optimize_contract,
+    )?;
     maybe_println!(
         verbosity,
         " {} {}",
         format!("[2/{}]", build_artifact.steps()).bold(),
         "Post processing wasm file".bright_green().bold()
     );
-    post_process_wasm(&crate_metadata)?;
-    if !optimize_contract {
-        return Ok((None, None));
-    }
+    post_process_wasm(&crate_metadata, !optimize_contract)?;
     maybe_println!(
         verbosity,
         " {} {}",
         format!("[3/{}]", build_artifact.steps()).bold(),
         "Optimizing wasm file".bright_green().bold()
     );
-    let optimization_result = optimize_wasm(&crate_metadata)?;
+    let optimization_result = optimize_wasm(&crate_metadata, !optimize_contract)?;
     Ok((
         Some(crate_metadata.dest_wasm.clone()),
         Some(optimization_result),
