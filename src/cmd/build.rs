@@ -381,7 +381,7 @@ fn do_optimization(
         // the memory is initialized to zeros, otherwise it won't run the
         // memory-packing pre-pass.
         .arg("--zero-filled-memory")
-        .arg(if debug { "--debuginfo" } else { "" })
+        .args(if debug { &["--debuginfo"][..] } else { &[][..] })
         .output()?;
 
     if !output.status.success() {
